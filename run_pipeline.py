@@ -2,9 +2,11 @@ import csv
 import os
 from dotenv import load_dotenv
 from pathlib import Path
-
+import logging
+from time import perf_counter
 import psycopg
 from psycopg import sql
+
 
 PROJECT_DIR = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_DIR / "data"
@@ -138,26 +140,70 @@ def check_data(cursor):
         if errors != 0:
             raise ValueError(f"FAILED: {name}. Errors: {errors}")
 
-        print(f"PASS: {name}")
-load_dotenv(PROJECT_DIR / ".env", interpolate=False)
+        logger.info("PASS: %s", name)
+LOG_DIR = PROJECT_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True)
 
-results = []
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    handlers=[
+        logging.FileHandler(
+            LOG_DIR / "pipeline.log",
+            encoding="utf-8",
+        ),
+        logging.StreamHandler(),
+    ],
+)
 
-with psycopg.connect(
-    host=os.environ["DB_HOST"],
-    port=int(os.environ["DB_PORT"]),
-    dbname=os.environ["DB_NAME"],
-    user=os.environ["DB_USER"],
-    password=os.environ["DB_PASSWORD"],
-) as connection:
-    with connection.cursor() as cursor:
-        for table_name, columns in TABLES:
-            processed, total = load_table(cursor, table_name, columns)
-            results.append((table_name, processed, total))
+logger = logging.getLogger(__name__)
 
-        check_data(cursor)
 
-print("Pipeline completed successfully.")
+def main():
+    load_dotenv(PROJECT_DIR / ".env", interpolate=False)
+    started_at = perf_counter()
+    results = []
 
-for table_name, processed, total in results:
-    print(f"{table_name}: processed={processed}, total={total}")
+    logger.info("Pipeline started")
+
+    try:
+        with psycopg.connect(
+            host=os.environ["DB_HOST"],
+            port=int(os.environ["DB_PORT"]),
+            dbname=os.environ["DB_NAME"],
+            user=os.environ["DB_USER"],
+            password=os.environ["DB_PASSWORD"],
+        ) as connection:
+            with connection.cursor() as cursor:
+                for table_name, columns in TABLES:
+                    logger.info("Loading table: %s", table_name)
+
+                    processed, total = load_table(
+                        cursor, table_name, columns
+                    )
+                    results.append((table_name, processed, total))
+
+                logger.info("Running data quality checks")
+                check_data(cursor)
+                logger.info("All data quality checks passed")
+
+        for table_name, processed, total in results:
+            logger.info(
+                "%s: processed=%s, total=%s",
+                table_name,
+                processed,
+                total,
+            )
+
+        logger.info(
+            "Pipeline completed successfully in %.2f seconds",
+            perf_counter() - started_at,
+        )
+
+    except Exception:
+        logger.exception("Pipeline failed")
+        raise
+
+
+if __name__ == "__main__":
+    main()
