@@ -185,6 +185,7 @@ def main():
 
                 logger.info("Running data quality checks")
                 check_data(cursor)
+
                 logger.info("All data quality checks passed")
 
         for table_name, processed, total in results:
