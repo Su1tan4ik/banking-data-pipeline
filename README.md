@@ -60,3 +60,83 @@ SQL-представление daily_transactions содержит показа�
 - Повторная загрузка сохраняет количество записей.
 - Искусственно вызванная ошибка откатывает изменение данных.
 - После устранения ошибки пайплайн успешно запускается снова.
+## Apache Airflow + Docker Compose (локальное обучение)
+
+Добавлен DAG `banking_data_pipeline` для Apache Airflow 3.3.2.
+Расписание: ежедневно в 08:00 по `Asia/Almaty`. DAG изначально на паузе.
+`catchup=False` отключает запуск исторических периодов; `max_active_runs=1`
+не допускает одновременных запусков этого DAG.
+
+Задачи:
+
+1. `prepare_demo_data`: генерирует синтетические CSV, только если все три
+   файла отсутствуют. Существующий набор повторно не генерируется.
+   Неполный набор приводит к ошибке, чтобы не перезаписать данные незаметно.
+2. `load_and_validate`: запускает исходный `run_pipeline.py`.
+   Загрузка всех таблиц и четыре проверки выполняются в одной транзакции.
+   При ошибке скрипт возвращает ненулевой код, Airflow показывает failed
+   или up_for_retry. Настроено две повторные попытки с начальной задержкой
+   две минуты и увеличением интервала; таймаут задачи — 15 минут.
+
+`daily_transactions` — обычное SQL-представление, а не материализованная
+таблица: отдельного задания обновления не требуется. Повторный запуск
+обрабатывает тот же полный набор данных, а не инкремент за календарный день.
+
+### Запуск на macOS
+
+Установите и запустите Docker Desktop. Выделите Docker минимум 4 ГБ RAM
+(желательно 8 ГБ). Команды выполняются из корня проекта:
+
+```bash
+cp .env.airflow.example .env.airflow
+docker compose --env-file .env.airflow -f compose.airflow.yaml up -d --build
+docker compose --env-file .env.airflow -f compose.airflow.yaml logs -f airflow
+```
+
+Первый запуск скачивает образы и устанавливает зависимости.
+После запуска откройте http://localhost:8080. Пользователь — `admin`.
+Пароль сгенерирован Airflow; посмотреть его локально:
+
+```bash
+docker compose --env-file .env.airflow -f compose.airflow.yaml exec airflow bash -c 'cat /opt/airflow/auth/passwords.json*'
+```
+
+Найдите `banking_data_pipeline`, снимите паузу и нажмите Trigger.
+В Graph/Grid должны успешно завершиться обе задачи. Логи доступны
+в интерфейсе Airflow; лог исходного скрипта — `/opt/banking/logs/pipeline.log`.
+
+Проверка импорта DAG:
+
+```bash
+docker compose --env-file .env.airflow -f compose.airflow.yaml exec airflow airflow dags list-import-errors
+```
+
+Проверка данных после запуска:
+
+```bash
+docker compose --env-file .env.airflow -f compose.airflow.yaml exec banking-db psql -U banking -d banking_dwh -c "SELECT (SELECT COUNT(*) FROM customers) AS customers, (SELECT COUNT(*) FROM accounts) AS accounts, (SELECT COUNT(*) FROM transactions) AS transactions;"
+```
+
+Ожидается: 1000 / 2000 / 10000. Запустите DAG второй раз: количество
+записей должно остаться тем же, в логах должны пройти все четыре проверки.
+
+### Окружение и данные
+
+Airflow использует отдельную PostgreSQL 16 для метаданных. Банковская БД —
+PostgreSQL 18, схема создаётся из `sql/schema.sql` при первом запуске пустого
+тома. Существующая PostgreSQL на Mac и её данные не изменяются: банковский
+контейнер не публикует порт 5432. CSV генерируются в отдельном Docker-томе.
+Исходный `.env` не копируется в образ; параметры БД передаются контейнеру.
+
+Это локальный учебный запуск через `airflow standalone` с Simple Auth Manager,
+а не production-развёртывание. Интерфейс доступен только через localhost.
+В `.env.airflow.example` — демонстрационные пароли; `.env.airflow` игнорируется Git.
+
+Остановить контейнеры с сохранением данных:
+
+```bash
+docker compose --env-file .env.airflow -f compose.airflow.yaml down
+```
+
+После изменения кода пересоберите образ той же командой `up -d --build`.
+Не используйте `down -v`, если хотите сохранить данные: этот флаг удаляет тома.

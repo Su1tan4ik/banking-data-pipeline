@@ -1,0 +1,7 @@
+FROM apache/airflow:3.3.2-python3.12
+USER airflow
+COPY requirements.txt /tmp/banking-requirements.txt
+RUN pip install --no-cache-dir "apache-airflow==3.3.2" -r /tmp/banking-requirements.txt
+COPY --chown=airflow:root . /opt/banking
+COPY --chown=airflow:root dags /opt/airflow/dags
+RUN mkdir -p /opt/banking/data /opt/banking/logs /opt/airflow/auth
